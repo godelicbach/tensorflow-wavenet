@@ -188,6 +188,7 @@ class WaveNetModel(object):
                              self.dilation_channels,
                              self.skip_channels])
 
+                        # This!!
                         if self.global_condition_channels is not None:
                             current['gc_gateweights'] = create_variable(
                                 'gc_gate',
@@ -270,6 +271,7 @@ class WaveNetModel(object):
         are omitted due to the limits of ASCII art.
 
         '''
+        import pdb; pdb.set_trace()
         variables = self.variables['dilated_stack'][layer_index]
 
         weights_filter = variables['filter']

@@ -17,7 +17,7 @@ TEMPERATURE = 1.0
 LOGDIR = './logdir'
 WAVENET_PARAMS = './wavenet_params.json'
 SAVE_EVERY = None
-SILENCE_THRESHOLD = 0.1
+SILENCE_THRESHOLD = None
 
 
 def get_arguments():
