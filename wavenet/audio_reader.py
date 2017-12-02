@@ -36,18 +36,33 @@ def find_files(directory, pattern='*.wav'):
     '''Recursively finds all files matching the pattern.'''
     files = []
     for root, dirnames, filenames in os.walk(directory):
-        for filename in fnmatch.filter(filenames, pattern):
+        for filename in [f for f in filenames if f.endswith(('.wav','.npy'))]:
             files.append(os.path.join(root, filename))
     return files
 
 
-def load_generic_audio(directory, sample_rate):
+def load_generic_audio(directory, sample_rate, lc_enabled):
     '''Generator that yields audio waveforms from the directory.'''
     files = find_files(directory)
+    if lc_enabled:
+        files = sorted(files)
+        wav_files=[]
+        lc_files=[]
+        for f in files:
+            if '.wav' in f:
+                wav_files.append(f)
+            elif '.npy' in f:
+                lc_files.append(f)
+        assert len(wav_files) == len(lc_files), "#of wav and lc doesn't match."
+        files = zip(wav_files,lc_files)
+
     id_reg_exp = re.compile(FILE_PATTERN)
     print("files length: {}".format(len(files)))
     randomized_files = randomize_files(files)
     for filename in randomized_files:
+        if lc_enabled:
+            lc_filename = filename[1]
+            filename = filename[0]
         ids = id_reg_exp.findall(filename)
         if not ids:
             # The file name does not match the pattern containing ids, so
@@ -58,7 +73,15 @@ def load_generic_audio(directory, sample_rate):
             category_id = int(ids[0][0])
         audio, _ = librosa.load(filename, sr=sample_rate, mono=True)
         audio = audio.reshape(-1, 1)
-        yield audio, filename, category_id
+
+        if lc_enabled:
+            local_condition = np.load(lc_filename).T
+            print('lc.shape : {}'.format(local_condition.shape))
+
+        else:
+            local_condition = None
+
+        yield audio, filename, category_id, local_condition
 
 
 def trim_silence(audio, threshold, frame_length=2048):
@@ -93,6 +116,8 @@ class AudioReader(object):
                  coord,
                  sample_rate,
                  gc_enabled,
+                 lc_enabled,
+                 lc_channels,
                  receptive_field,
                  sample_size=None,
                  silence_threshold=None,
@@ -104,6 +129,8 @@ class AudioReader(object):
         self.receptive_field = receptive_field
         self.silence_threshold = silence_threshold
         self.gc_enabled = gc_enabled
+        self.lc_enabled = lc_enabled
+        self.lc_channels = lc_channels
         self.threads = []
         self.sample_placeholder = tf.placeholder(dtype=tf.float32, shape=None)
         self.queue = tf.PaddingFIFOQueue(queue_size,
@@ -116,6 +143,17 @@ class AudioReader(object):
             self.gc_queue = tf.PaddingFIFOQueue(queue_size, ['int32'],
                                                 shapes=[()])
             self.gc_enqueue = self.gc_queue.enqueue([self.id_placeholder])
+
+        if self.lc_enabled:
+            assert self.silence_threshold is None, "trimming should be disabled"\
+                                                   "with local conditioning."
+            assert self.sample_size is not None, "sample size should not be"\
+                                                 "None with local conditioning."
+            self.lc_placeholder = tf.placeholder(dtype=tf.float32,shape=(1,lc_channels))
+            self.lc_queue = tf.PaddingFIFOQueue(queue_size,
+                                                ['float32'],
+                                                shapes=[(1,lc_channels)])
+            self.lc_enqueue = self.lc_queue.enqueue([self.lc_placeholder])
 
         # TODO Find a better way to check this.
         # Checking inside the AudioReader's thread makes it hard to terminate
@@ -148,14 +186,23 @@ class AudioReader(object):
         return output
 
     def dequeue_gc(self, num_elements):
-        return self.gc_queue.dequeue_many(num_elements)
+        output = self.gc_queue.dequeue_many(num_elements)
+        return output
 
+    def dequeue_lc(self, num_elements):
+        output =  self.lc_queue.dequeue_many(num_elements)
+        return output
+
+
+
+    #TODO local condition file loading.
     def thread_main(self, sess):
         stop = False
         # Go through the dataset multiple times
         while not stop:
-            iterator = load_generic_audio(self.audio_dir, self.sample_rate)
-            for audio, filename, category_id in iterator:
+            iterator = load_generic_audio(self.audio_dir, self.sample_rate,
+                self.lc_enabled)
+            for audio, filename, category_id, local_condition in iterator:
                 if self.coord.should_stop():
                     stop = True
                     break
@@ -178,12 +225,23 @@ class AudioReader(object):
                     while len(audio) > self.receptive_field:
                         piece = audio[:(self.receptive_field +
                                         self.sample_size), :]
+                        audio = audio[self.sample_size:, :]
+                        if self.lc_enabled:
+                            local_condition = local_condition[1:,:]
+                        # TODO Skip silent pieces.
+                        # For local_condition, piece should match the size.
+                        if len(piece) < self.receptive_field + self.sample_size:
+                            break
+
                         sess.run(self.enqueue,
                                  feed_dict={self.sample_placeholder: piece})
-                        audio = audio[self.sample_size:, :]
                         if self.gc_enabled:
                             sess.run(self.gc_enqueue, feed_dict={
                                 self.id_placeholder: category_id})
+                        if self.lc_enabled:
+                            lc_piece = local_condition[:1,:] #shape=[1,264]
+                            sess.run(self.lc_enqueue, feed_dict={
+                                     self.lc_placeholder: lc_piece})
                 else:
                     sess.run(self.enqueue,
                              feed_dict={self.sample_placeholder: audio})

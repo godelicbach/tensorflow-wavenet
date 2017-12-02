@@ -19,15 +19,15 @@ from tensorflow.python.client import timeline
 
 from wavenet import WaveNetModel, AudioReader, optimizer_factory
 
-BATCH_SIZE = 1
-DATA_DIRECTORY = './wav'
+BATCH_SIZE = 64
+DATA_DIRECTORY = './guitar'
 LOGDIR_ROOT = './logdir'
 CHECKPOINT_EVERY = 50
 NUM_STEPS = int(1e5)
 LEARNING_RATE = 1e-3
 WAVENET_PARAMS = './wavenet_params.json'
 STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
-SAMPLE_SIZE = 100000
+SAMPLE_SIZE = 512
 L2_REGULARIZATION_STRENGTH = 0
 SILENCE_THRESHOLD = None
 EPSILON = 0.001
@@ -100,6 +100,9 @@ def get_arguments():
                         help='Whether to store histogram summaries. Default: False')
     parser.add_argument('--gc_channels', type=int, default=None,
                         help='Number of global condition channels. Default: None. Expecting: Int')
+    parser.add_argument('--lc_channels', type=int, default=None,
+                        help='Number of global condition channels. Default: None. Expecting: Int')
+
     parser.add_argument('--max_checkpoints', type=int, default=MAX_TO_KEEP,
                         help='Maximum amount of checkpoints that will be kept alive. Default: '
                              + str(MAX_TO_KEEP) + '.')
@@ -215,11 +218,15 @@ def main():
         silence_threshold = args.silence_threshold if args.silence_threshold > \
                                                       EPSILON else None
         gc_enabled = args.gc_channels is not None
+        lc_enabled = args.lc_channels is not None
+        lc_channels = args.lc_channels
         reader = AudioReader(
             args.data_dir,
             coord,
             sample_rate=wavenet_params['sample_rate'],
             gc_enabled=gc_enabled,
+            lc_enabled=lc_enabled,
+            lc_channels=lc_channels,
             receptive_field=WaveNetModel.calculate_receptive_field(wavenet_params["filter_width"],
                                                                    wavenet_params["dilations"],
                                                                    wavenet_params["scalar_input"],
@@ -231,7 +238,10 @@ def main():
             gc_id_batch = reader.dequeue_gc(args.batch_size)
         else:
             gc_id_batch = None
-
+        if lc_enabled:
+            lc_batch = reader.dequeue_lc(args.batch_size)
+        else:
+            lc_batch = None
     # Create network.
     net = WaveNetModel(
         batch_size=args.batch_size,
@@ -246,12 +256,14 @@ def main():
         initial_filter_width=wavenet_params["initial_filter_width"],
         histograms=args.histograms,
         global_condition_channels=args.gc_channels,
-        global_condition_cardinality=reader.gc_category_cardinality)
+        global_condition_cardinality=reader.gc_category_cardinality,
+        local_condition_channels=args.lc_channels)
 
     if args.l2_regularization_strength == 0:
         args.l2_regularization_strength = None
     loss = net.loss(input_batch=audio_batch,
                     global_condition_batch=gc_id_batch,
+                    local_condition_batch=lc_batch,
                     l2_regularization_strength=args.l2_regularization_strength)
     optimizer = optimizer_factory[args.optimizer](
                     learning_rate=args.learning_rate,
@@ -285,7 +297,6 @@ def main():
               "We will terminate training to avoid accidentally overwriting "
               "the previous model.")
         raise
-
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
     reader.start_threads(sess)
 

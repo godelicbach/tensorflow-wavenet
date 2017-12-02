@@ -18,6 +18,7 @@ LOGDIR = './logdir'
 WAVENET_PARAMS = './wavenet_params.json'
 SAVE_EVERY = None
 SILENCE_THRESHOLD = None
+LC_DURATION = 512
 
 
 def get_arguments():
@@ -86,6 +87,22 @@ def get_arguments():
         help='Number of global condition embedding channels. Omit if no '
              'global conditioning.')
     parser.add_argument(
+        '--lc_channels',
+        type=int,
+        default=None,
+        help='Number of local condition embedding channels. Omit if no '
+             'local conditioning.')
+    parser.add_argument(
+        '--lc_duration',
+        type=int,
+        default=LC_DURATION,
+        help='Number of samples which are conditioned by single lc feature.')
+    parser.add_argument(
+        '--lc_path',
+        type=str,
+        default=None,
+        help='location of local condition data.')
+    parser.add_argument(
         '--gc_cardinality',
         type=int,
         default=None,
@@ -131,6 +148,12 @@ def create_seed(filename,
 
     return quantized[:cut_index]
 
+def load_lc(path):
+    files = os.listdir(path)
+    lc_files = [f for f in files if f.endswith('.npy')]
+    lc_file = os.path.join(path,lc_files[0])
+    lc = np.load(lc_file).T
+    return lc
 
 def main():
     args = get_arguments()
@@ -138,6 +161,11 @@ def main():
     logdir = os.path.join(args.logdir, 'generate', started_datestring)
     with open(args.wavenet_params, 'r') as config_file:
         wavenet_params = json.load(config_file)
+
+    lc_enabled = args.lc_channels is not None
+    lc_channels = args.lc_channels
+    lc_duration = args.lc_duration
+
 
     sess = tf.Session()
 
@@ -153,14 +181,21 @@ def main():
         scalar_input=wavenet_params['scalar_input'],
         initial_filter_width=wavenet_params['initial_filter_width'],
         global_condition_channels=args.gc_channels,
-        global_condition_cardinality=args.gc_cardinality)
+        global_condition_cardinality=args.gc_cardinality,
+        local_condition_channels=args.lc_channels)
 
     samples = tf.placeholder(tf.int32)
+    lc_piece = tf.placeholder(tf.float32,[1,lc_channels])
+    local_condition = load_lc(os.path.join(os.getcwd(),args.lc_path))
 
+    args.samples = args.lc_duration * len(local_condition)
+    
     if args.fast_generation:
-        next_sample = net.predict_proba_incremental(samples, args.gc_id)
+        next_sample = net.predict_proba_incremental(samples, args.gc_id,
+            lc_piece)
     else:
-        next_sample = net.predict_proba(samples, args.gc_id)
+        next_sample = net.predict_proba(samples, args.gc_id,
+            lc_piece)
 
     if args.fast_generation:
         sess.run(tf.global_variables_initializer())
@@ -218,8 +253,15 @@ def main():
                 window = waveform
             outputs = [next_sample]
 
-        # Run the WaveNet to predict the next sample.
-        prediction = sess.run(outputs, feed_dict={samples: window})[0]
+        if lc_enabled:
+            if(step % lc_duration==0):
+                lc_window = local_condition[:1,:]
+                local_condition[1:,:]
+            prediction = sess.run(outputs, feed_dict={samples: window,
+                                                      lc_piece: lc_window})[0]
+        else:
+            # Run the WaveNet to predict the next sample.
+            prediction = sess.run(outputs, feed_dict={samples: window})[0]
 
         # Scale prediction distribution using temperature.
         np.seterr(divide='ignore')

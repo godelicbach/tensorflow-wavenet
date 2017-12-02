@@ -1,0 +1,23 @@
+{
+    "protocol": "sftp",
+    "host": "141.223.196.19",
+    "port": 1326,
+    "user": "kyungsukim",
+    "pass": "Ab11632822",
+    "promptForPass": false,
+    "remote": "/home/kyungsukim/tensorflow-wavenet",
+    "local": "",
+    "agent": "",
+    "privatekey": "",
+    "passphrase": "",
+    "hosthash": "",
+    "ignorehost": true,
+    "connTimeout": 10000,
+    "keepalive": 10000,
+    "keyboardInteractive": false,
+    "keyboardInteractiveForPass": false,
+    "remoteCommand": "",
+    "remoteShell": "",
+    "watch": [],
+    "watchTimeout": 500
+}
